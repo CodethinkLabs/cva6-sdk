@@ -13,6 +13,10 @@ MKIMAGE     := u-boot/tools/mkimage
 
 NR_CORES := $(shell nproc)
 
+# copied from OpenSBI
+CC_SUPPORT_ZICSR_ZIFENCEI := $(shell $(CC) -nostdlib -march=rv$(XLEN)imafd_zicsr_zifencei -x c /dev/null -o /dev/null 2>&1 | grep -e "zicsr" -e "zifencei" > /dev/null && echo n || echo y)
+
+
 # SBI options
 PLATFORM := fpga/ariane
 # PLATFORM := fpga/cva6-altera
@@ -21,7 +25,13 @@ sbi-mk = PLATFORM=$(PLATFORM) CROSS_COMPILE=$(TOOLCHAIN_PREFIX) $(if $(FW_FDT_PA
 ifeq ($(XLEN), 32)
 sbi-mk += PLATFORM_RISCV_ISA=rv32ima PLATFORM_RISCV_XLEN=32
 else
-sbi-mk += PLATFORM_RISCV_ISA=rv64imafdc PLATFORM_RISCV_XLEN=64
+# if zifencei we need to change the PLATFORM_RISCV_ISA for OpenSBI build
+# otherwise we get build errors about the fence.i instructions we need
+ifeq ($(CC_SUPPORT_ZICSR_ZIFENCEI),y)
+sbi-mk +=  PLATFORM_RISCV_ISA=rv64imafdc_zicsr_zifencei PLATFORM_RISCV_XLEN=64
+else
+sbi-mk +=  PLATFORM_RISCV_ISA=rv64imafdc PLATFORM_RISCV_XLEN=64
+endif
 endif
 
 # U-Boot options
