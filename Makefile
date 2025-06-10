@@ -1,12 +1,22 @@
 # Makefile for RISC-V toolchain; run 'make help' for usage. set XLEN here to 32 or 64.
 
+# set BE=1 to make big-endian
+
+ifeq ($(BE), 1)
+ENDIAN_POSTFIX=be
+UBOOT_CONFIG=be_
+else
+ENDIAN_POSTFIX=
+UBOOT_CONFIG=
+endif
+
 XLEN     := 64
 ROOT     := $(patsubst %/,%, $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
-RISCV    := $(PWD)/install$(XLEN)
+RISCV    := $(PWD)/install$(XLEN)$(ENDIAN_POSTFIX)
 DEST     := $(abspath $(RISCV))
 PATH     := $(DEST)/bin:$(PATH)
 
-TOOLCHAIN_PREFIX := $(ROOT)/buildroot/output/host/bin/riscv$(XLEN)-buildroot-linux-gnu-
+TOOLCHAIN_PREFIX := $(ROOT)/buildroot/output/host/bin/riscv$(XLEN)$(ENDIAN_POSTFIX)-buildroot-linux-gnu-
 CC          := $(TOOLCHAIN_PREFIX)gcc
 OBJCOPY     := $(TOOLCHAIN_PREFIX)objcopy
 MKIMAGE     := u-boot/tools/mkimage
@@ -15,7 +25,6 @@ NR_CORES := $(shell nproc)
 
 # copied from OpenSBI
 CC_SUPPORT_ZICSR_ZIFENCEI := $(shell $(CC) -nostdlib -march=rv$(XLEN)imafd_zicsr_zifencei -x c /dev/null -o /dev/null 2>&1 | grep -e "zicsr" -e "zifencei" > /dev/null && echo n || echo y)
-
 
 # SBI options
 PLATFORM := fpga/ariane
@@ -32,6 +41,10 @@ sbi-mk +=  PLATFORM_RISCV_ISA=rv64imafdc_zicsr_zifencei PLATFORM_RISCV_XLEN=64
 else
 sbi-mk +=  PLATFORM_RISCV_ISA=rv64imafdc PLATFORM_RISCV_XLEN=64
 endif
+endif
+
+ifeq ($(BE), 1)
+sbi-mk += PLATFORM_DEFCONFIG=defconfig_be
 endif
 
 # U-Boot options
@@ -61,8 +74,8 @@ tests-mk         		= -j$(NR_CORES)
 buildroot-mk       		= -j$(NR_CORES)
 
 # linux image
-buildroot_defconfig = configs/buildroot$(XLEN)_defconfig
-linux_defconfig = configs/linux$(XLEN)_defconfig
+buildroot_defconfig = configs/buildroot$(XLEN)$(ENDIAN_POSTFIX)_defconfig
+linux_defconfig = configs/linux$(XLEN)$(ENDIAN_POSTFIX)_defconfig
 busybox_defconfig = configs/busybox$(XLEN).config
 
 install-dir:
@@ -85,6 +98,8 @@ tests: install-dir $(CC)
 	make install;\
 	cd $(ROOT)
 
+# think we need the sdk to allow building of external code
+ifneq ($(HOST_CC),1)
 $(CC): $(buildroot_defconfig) $(linux_defconfig) $(busybox_defconfig)
 ifeq ($(PLATFORM),fpga/cva6-altera) 
 	cp agilex_patch/0008* linux_patch/
@@ -92,6 +107,8 @@ ifeq ($(PLATFORM),fpga/cva6-altera)
 endif
 	make -C buildroot defconfig BR2_DEFCONFIG=../$(buildroot_defconfig)
 	make -C buildroot host-gcc-final $(buildroot-mk)
+	make -C buildroot sdk
+endif
 
 all: $(CC) isa-sim
 
@@ -125,7 +142,7 @@ $(RISCV)/u-boot.bin: u-boot/u-boot.bin
 	cp $< $@
 
 $(MKIMAGE) u-boot/u-boot.bin: $(CC)
-	make -C u-boot openhwgroup_cv$(XLEN)a6_$(BOARD)_defconfig
+	make -C u-boot openhwgroup_cv$(XLEN)a6_$(UBOOT_CONFIG)_$(BOARD)_defconfig
 	make -C u-boot CROSS_COMPILE=$(TOOLCHAIN_PREFIX)
 
 # OpenSBI with u-boot as payload
