@@ -11,7 +11,7 @@
 	url = https://gitlab.com/CodethinkLabs/buildroot.git
 [submodule "vitetris"]
 	path = vitetris
-	url = https://github.com/pulp-platform/vitetris.git
+	url = https://github.com/bjdooks-ct/vitetris.git
 [submodule "u-boot"]
 	path = u-boot
 	url = https://gitlab.com/CodethinkLabs/u-boot.git
