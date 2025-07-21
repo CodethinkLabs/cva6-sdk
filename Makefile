@@ -1,6 +1,7 @@
 # Makefile for RISC-V toolchain; run 'make help' for usage. set XLEN here to 32 or 64.
 
 # set BE=1 to make big-endian
+# set FS=1 to build a filesystem instead of initrd
 
 ifeq ($(BE), 1)
 ENDIAN_POSTFIX=be
@@ -10,13 +11,23 @@ ENDIAN_POSTFIX=
 UBOOT_CONFIG=
 endif
 
+ifeq ($(FS),1)
+FS_POSTFIX=fs
+FS_SECTORSTART=2097152
+FS_PARTS=--new=3:$(FS_SECTORSTART): --typecode=3:8300
+else
+FS_POSTFIX=
+FS_PARTS=
+endif
+
 XLEN     := 64
 ROOT     := $(patsubst %/,%, $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
-RISCV    := $(PWD)/install$(XLEN)$(ENDIAN_POSTFIX)
+RISCV    := $(PWD)/install$(XLEN)$(ENDIAN_POSTFIX)$(FS_POSTFIX)
 DEST     := $(abspath $(RISCV))
 PATH     := $(DEST)/bin:$(PATH)
 
-TOOLCHAIN_PREFIX := $(ROOT)/buildroot/output/host/bin/riscv$(XLEN)$(ENDIAN_POSTFIX)-buildroot-linux-gnu-
+#TOOLCHAIN_PREFIX := $(ROOT)/buildroot/output/host/bin/riscv$(XLEN)$(ENDIAN_POSTFIX)-buildroot-linux-gnu-
+TOOLCHAIN_PREFIX := $(ROOT)/buildroot/output/host/bin/riscv$(XLEN)$(ENDIAN_POSTFIX)-buildroot-linux-uclibc-
 CC          := $(TOOLCHAIN_PREFIX)gcc
 OBJCOPY     := $(TOOLCHAIN_PREFIX)objcopy
 MKIMAGE     := u-boot/tools/mkimage
@@ -74,8 +85,8 @@ tests-mk         		= -j$(NR_CORES)
 buildroot-mk       		= -j$(NR_CORES)
 
 # linux image
-buildroot_defconfig = configs/buildroot$(XLEN)$(ENDIAN_POSTFIX)_defconfig
-linux_defconfig = configs/linux$(XLEN)$(ENDIAN_POSTFIX)_defconfig
+buildroot_defconfig = configs/buildroot$(XLEN)$(ENDIAN_POSTFIX)$(FS_POSTFIX)_defconfig
+linux_defconfig = configs/linux$(XLEN)$(ENDIAN_POSTFIX)$(FS_POSTFIX)_defconfig
 busybox_defconfig = configs/busybox$(XLEN).config
 
 install-dir:
@@ -97,6 +108,18 @@ tests: install-dir $(CC)
 	make $(tests-mk);\
 	make install;\
 	cd $(ROOT)
+
+configs/buildroot64befs_defconfig: configs/buildroot64be_defconfig
+	sed -e '/BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE*/d' -e '/BR2_TARGET_ROOTFS_INITRAMFS*/d' < $< > $@
+	echo 'BR2_TARGET_ROOTFS_EXT2=y' >> $@
+	echo 'BR2_TARGET_ROOTFS_EXT2_4=y' >> $@
+	echo 'BR2_TARGET_ROOTFS_EXT2_GEN=4' >> $@
+	echo 'BR2_TARGET_ROOTFS_EXT2_SIZE="512M"' >> $@
+	echo 'BR2_LINUX_KERNEL_CUSTOM_CONFIG_FILE="../$(linux_defconfig)"' >> $@
+
+configs/linux64befs_defconfig: configs/linux64be_defconfig
+	sed -e '/CONFIG_INITRAMFS_SOURCE*/d' -e 's@CONFIG_CMDLINE="@CONFIG_CMDLINE="rootwait root=/dev/mmcblk0p3 @g' < $< > $@ || (rm $@; exit 1)
+
 
 # think we need the sdk to allow building of external code
 ifneq ($(HOST_CC),1)
@@ -133,6 +156,9 @@ $(RISCV)/Image: $(RISCV)/vmlinux
 $(RISCV)/Image.gz: $(RISCV)/Image
 	gzip -9 -k --force $< > $@
 
+$(RISCV)/Image.bz2: $(RISCV)/Image
+	bzip2 -9 -zk --force $< > $@
+
 # U-Boot-compatible Linux image
 $(RISCV)/uImage: $(RISCV)/Image.gz $(MKIMAGE)
 	$(MKIMAGE) -A riscv -O linux -T kernel -a $(UIMAGE_LOAD_ADDRESS) -e $(UIMAGE_ENTRY_POINT) -C gzip -n "CV$(XLEN)A6Linux" -d $< $@
@@ -143,6 +169,10 @@ $(RISCV)/u-boot.bin: u-boot/u-boot.bin
 
 $(MKIMAGE) u-boot/u-boot.bin: $(CC)
 	make -C u-boot openhwgroup_cv$(XLEN)a6_$(UBOOT_CONFIG)_$(BOARD)_defconfig
+ifeq ($(FS),1)
+	sed -e 's/90000000 100000 8000/90000000 100000 3500/g' u-boot/.config
+	make -C u-boot oldconfig
+endif
 	make -C u-boot CROSS_COMPILE=$(TOOLCHAIN_PREFIX)
 
 # OpenSBI with u-boot as payload
@@ -174,17 +204,20 @@ flash-sdcard: format-sd
 
 format-sd: $(SDDEVICE)
 	@test -n "$(SDDEVICE)" || (echo 'SDDEVICE must be set, Ex: make flash-sdcard SDDEVICE=/dev/sdc' && exit 1)
-	sgdisk --clear -g --new=1:$(FWPAYLOAD_SECTORSTART):$(FWPAYLOAD_SECTOREND) --new=2:$(UIMAGE_SECTORSTART):${UIMAGE_SECTOREND} --typecode=1:3000 --typecode=2:8300 $(SDDEVICE)
+	sgdisk --clear -g --new=1:$(FWPAYLOAD_SECTORSTART):$(FWPAYLOAD_SECTOREND) --new=2:$(UIMAGE_SECTORSTART):${UIMAGE_SECTOREND} --typecode=1:3000 --typecode=2:8300 $(FS_PARTS) $(SDDEVICE)
 
 # flash-file and format-file are basically the same as the sdcard ones but aum to use a file
 
 flash-file: format-file
 	dd if=$(RISCV)/fw_payload.bin of=$(IMGFILE) seek=${FWPAYLOAD_SECTORSTART} status=progress conv=notrunc bs=512
 	dd if=$(RISCV)/uImage         of=$(IMGFILE) seek=$(UIMAGE_SECTORSTART) status=progress conv=notrunc bs=1
+ifeq ($(FS),1)
+	dd if=buildroot/output/images/rootfs.ext2  of=$(IMGFILE) seek=$(FS_SECTORSTART) status=progress conv=notrunc bs=512
+endif
 
 format-file:
 	@test -n "$(IMGFILE)" || (echo 'IMGFILE must be set, Ex: make format-file IMGFILE=output.img' && exit 1)
-	sgdisk --clear -g --new=1:$(FWPAYLOAD_SECTORSTART):$(FWPAYLOAD_SECTOREND) --new=2:$(UIMAGE_SECTORSTART):${UIMAGE_SECTOREND} --typecode=1:3000 --typecode=2:8300 $(IMGFILE)
+	sgdisk --clear -g --new=1:$(FWPAYLOAD_SECTORSTART):$(FWPAYLOAD_SECTOREND) --new=2:$(UIMAGE_SECTORSTART):${UIMAGE_SECTOREND} --typecode=1:3000 --typecode=2:8300 $(FS_PARTS) $(IMGFILE)
 
 # specific recipes
 gcc: $(CC)
